@@ -1,138 +1,121 @@
-import jwt from 'jsonwebtoken';
-import bcrypt from 'bcryptjs';
+const Employee = require('../models/Employee');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const { AuthenticationError, ForbiddenError, UserInputError } = require('apollo-server-express');
 
-// Helper: apply filters, sorting, and pagination on arrays
-function applyQuery(list, { filter, sortBy, page = 1, pageSize = 10 } = {}) {
-  let result = [...list];
-
-  // Filtering
-  if (filter) {
-    const {
-      nameContains,
-      minAge,
-      maxAge,
-      role,
-      attendanceMin,
-      attendanceMax,
-    } = filter;
-    result = result.filter((e) => {
-      const nameOk = nameContains
-        ? e.name.toLowerCase().includes(nameContains.toLowerCase())
-        : true;
-      const minAgeOk = typeof minAge === 'number' ? e.age >= minAge : true;
-      const maxAgeOk = typeof maxAge === 'number' ? e.age <= maxAge : true;
-      const roleOk = role ? e.role === role : true;
-      const attMinOk = typeof attendanceMin === 'number' ? e.attendance >= attendanceMin : true;
-      const attMaxOk = typeof attendanceMax === 'number' ? e.attendance <= attendanceMax : true;
-      return nameOk && minAgeOk && maxAgeOk && roleOk && attMinOk && attMaxOk;
-    });
-  }
-
-  // Sorting
-  if (sortBy?.field) {
-    const dir = sortBy.direction === 'DESC' ? -1 : 1;
-    const field = sortBy.field;
-    result.sort((a, b) => {
-      const av = a[field];
-      const bv = b[field];
-      if (av === bv) return 0;
-      return av > bv ? dir : -dir;
-    });
-  }
-
-  // Pagination (offset-based)
-  const total = result.length;
-  const start = (page - 1) * pageSize;
-  const end = start + pageSize;
-  const pageItems = result.slice(start, end);
-
-  return { total, page, pageSize, items: pageItems };
-}
-
-// Role guard utility
-function ensureAdmin(auth) {
-  if (!auth?.user || auth.user.role !== 'admin') {
-    throw new Error('Admin privileges required');
-  }
-}
-
-// Allow employee to update limited own fields
-const EMPLOYEE_SELF_UPDATABLE = new Set(['name', 'avatar', 'subjects', 'class']);
-
-export const resolvers = {
+const resolvers = {
   Query: {
-    // Fetch employees with filter/sort/pagination; use repository for DB or memory
-    async employees(_, args, { repo }) {
-      const docs = await repo.findAll();
-      return applyQuery(docs, args);
+    employees: async (_, { page = 1, pageSize = 10, filter, sortBy }, { user }) => {
+      if (!user) throw new AuthenticationError('Not authenticated');
+
+      const query = {};
+      
+      // RBAC: If not admin, only show own record
+      if (user.role !== 'admin') {
+        query._id = user.id;
+      }
+
+      if (filter) {
+        if (filter.name) query.name = { $regex: filter.name, $options: 'i' };
+        if (filter.minAge) query.age = { ...query.age, $gte: filter.minAge };
+        if (filter.maxAge) query.age = { ...query.age, $lte: filter.maxAge };
+        if (filter.role) query.role = filter.role;
+        if (filter.attendanceMin) query.attendance = { ...query.attendance, $gte: filter.attendanceMin };
+        if (filter.attendanceMax) query.attendance = { ...query.attendance, $lte: filter.attendanceMax };
+      }
+
+      const sort = {};
+      if (sortBy) {
+        sort[sortBy.field] = sortBy.order === 'asc' ? 1 : -1;
+      } else {
+        sort.date = -1; // Default sort by date desc
+      }
+
+      const totalCount = await Employee.countDocuments(query);
+      const totalPages = Math.ceil(totalCount / pageSize);
+      const employees = await Employee.find(query)
+        .sort(sort)
+        .skip((page - 1) * pageSize)
+        .limit(pageSize);
+
+      return { employees, totalCount, totalPages };
     },
-    async employee(_, { id }, { repo }) {
-      return repo.findById(id);
+    employee: async (_, { id }, { user }) => {
+      if (!user) throw new AuthenticationError('Not authenticated');
+      // RBAC: If not admin, can only view self
+      if (user.role !== 'admin' && user.id !== id) {
+        throw new ForbiddenError('Not authorized to view this employee');
+      }
+      return await Employee.findById(id);
+    },
+    me: async (_, __, { user }) => {
+      if (!user) throw new AuthenticationError('Not authenticated');
+      return await Employee.findById(user.id);
     },
   },
   Mutation: {
-    // Admin-only: add a new employee
-    async addEmployee(_, { input }, { auth, repo }) {
-      ensureAdmin(auth);
-      // If adding with email+password in input, hash password; else seed defaults
-      const payload = { ...input };
-      if (input.password) {
-        payload.passwordHash = await bcrypt.hash(input.password, 10);
-        delete payload.password;
-      }
-      const created = await repo.create(payload);
-      return created;
+    login: async (_, { email, password }) => {
+      console.log({email, password})
+      const employee = await Employee.findOne({ email });
+      console.log('employee->', employee)
+      if (!employee) throw new UserInputError('Invalid credentials');
+
+      const valid = await bcrypt.compare(password, employee.password);
+      if (!valid) throw new UserInputError('Invalid credentials');
+
+      const token = jwt.sign(
+        { id: employee.id, role: employee.role },
+        process.env.JWT_SECRET || 'supersecretkey123',
+        { expiresIn: '1d' }
+      );
+
+      return { token, user: employee };
     },
+    addEmployee: async (_, args, { user }) => {
+      if (!user || user.role !== 'admin') throw new ForbiddenError('Not authorized');
 
-    // Update employee: admin full update; employee limited fields for self
-    async updateEmployee(_, { id, input }, { auth, repo }) {
-      if (!auth?.user) throw new Error('Authentication required');
-      const isAdmin = auth.user.role === 'admin';
-      const isSelf = auth.user.id === id;
-
-      if (!isAdmin && !isSelf) {
-        throw new Error('Not authorized to update this record');
-      }
-
-      let update = { ...input };
-      if (!isAdmin && isSelf) {
-        // Restrict fields
-        update = Object.fromEntries(
-          Object.entries(update).filter(([k]) => EMPLOYEE_SELF_UPDATABLE.has(k))
-        );
-      }
-
-      const updated = await repo.updateById(id, update);
-      return updated;
+      const hashedPassword = await bcrypt.hash(args.password, 10);
+      const newEmployee = new Employee({ ...args, password: hashedPassword });
+      return await newEmployee.save();
     },
+    updateEmployee: async (_, { id, ...updates }, { user }) => {
+      if (!user) throw new AuthenticationError('Not authenticated');
+      
+      // RBAC: Admin can update anyone. Employee can only update self.
+      if (user.role !== 'admin' && user.id !== id) {
+        throw new ForbiddenError('Not authorized to update this employee');
+      }
 
-    // Admin-only
-    async deleteEmployee(_, { id }, { auth, repo }) {
-      ensureAdmin(auth);
-      await repo.deleteById(id);
+      // If not admin (meaning it's self-update), strip out restricted fields
+      // Allowing only: name (first/last implied by single name field in this schema)
+      if (user.role !== 'admin') {
+        const allowedUpdates = {};
+        if (updates.name) allowedUpdates.name = updates.name;
+        
+        // If they try to update anything else that isn't allowed, we could throw or just ignore. 
+        // For strictness, if they try to update role/attendance/etc, we ignore it.
+        // We replace 'updates' with 'allowedUpdates'.
+        
+        // Check if there are meaningful updates
+        if (Object.keys(allowedUpdates).length === 0) {
+           // If they tried to update something else but we stripped it
+           // In this specific request user asked for "first name and last name", but schema has "name".
+           // We will update 'name'. 
+           if (Object.keys(updates).length > 0) {
+             throw new ForbiddenError('You are only allowed to update your name.');
+           }
+        }
+        updates = allowedUpdates;
+      }
+
+      return await Employee.findByIdAndUpdate(id, updates, { new: true });
+    },
+    deleteEmployee: async (_, { id }, { user }) => {
+      if (!user || user.role !== 'admin') throw new ForbiddenError('Not authorized');
+      await Employee.findByIdAndDelete(id);
       return true;
-    },
-
-    // Login: returns JWT and user
-    async login(_, { email, password }, { repo }) {
-      const user = await repo.findByEmail(email);
-      if (!user) throw new Error('Invalid credentials');
-
-      if (user.passwordHash) {
-        const ok = await bcrypt.compare(password, user.passwordHash);
-        if (!ok) throw new Error('Invalid credentials');
-      } else {
-        // If for some reason not hashed (memory seed), accept default password
-        if (password !== 'password123') throw new Error('Invalid credentials');
-      }
-
-      const token = jwt.sign({ id: user.id, role: user.role, name: user.name }, process.env.JWT_SECRET, {
-        expiresIn: '2h',
-      });
-      return {
-        token,
-        user: { id: user.id, name: user.name, role: user.role },
-      };
     },
   },
 };
+
+module.exports = resolvers;

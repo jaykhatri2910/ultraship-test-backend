@@ -1,26 +1,16 @@
-import mongoose from 'mongoose';
+const mongoose = require('mongoose');
 
-const employeeSchema = new mongoose.Schema(
-  {
-    name: { type: String, required: true, index: true },
-    age: { type: Number, required: true, index: true },
-    class: { type: String },
-    subjects: { type: [String], default: [] },
-    attendance: { type: Number, required: true, index: true },
-    role: { type: String, required: true, enum: ['admin', 'employee'], index: true },
-    avatar: { type: String },
-    date: { type: Date, required: true },
-    email: { type: String, required: true, unique: true, index: true },
-    flagged: { type: Boolean, default: false },
-    passwordHash: { type: String },
-  },
-  { timestamps: true }
-);
+const employeeSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  age: { type: Number, required: true },
+  class: { type: String, required: true },
+  subjects: { type: [String], required: true },
+  attendance: { type: Number, required: true }, // Percentage
+  role: { type: String, enum: ['admin', 'employee'], default: 'employee' },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true }, // Hashed
+  avatar: { type: String }, // URL
+  date: { type: Date, default: Date.now },
+});
 
-// Suggested indexes for performance
-employeeSchema.index({ name: 1 });
-employeeSchema.index({ role: 1 });
-employeeSchema.index({ age: 1 });
-employeeSchema.index({ attendance: 1 });
-
-export default mongoose.models.Employee || mongoose.model('Employee', employeeSchema);
+module.exports = mongoose.model('Employee', employeeSchema);

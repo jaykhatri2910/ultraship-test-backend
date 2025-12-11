@@ -1,96 +1,81 @@
-// GraphQL type definitions for Employee and related queries/mutations
-// Includes filters, sorting, and pagination types.
-export const typeDefs = `#graphql
-  """
-  An employee record stored in Mongo or in-memory.
-  """
+const { gql } = require('apollo-server-express');
+
+const typeDefs = gql`
   type Employee {
     id: ID!
     name: String!
     age: Int!
-    class: String
-    subjects: [String!]!
-    attendance: Float!
-    role: String! # 'admin' | 'employee'
-    avatar: String
-    actions: [String!] # virtual: derived based on role
-    date: String!
-    email: String!
-    flagged: Boolean!
-  }
-
-  input EmployeeFilter {
-    nameContains: String
-    minAge: Int
-    maxAge: Int
-    role: String
-    attendanceMin: Float
-    attendanceMax: Float
-  }
-
-  input SortBy {
-    field: String!
-    direction: SortDirection!
-  }
-
-  enum SortDirection {
-    ASC
-    DESC
-  }
-
-  type EmployeePage {
-    total: Int!
-    page: Int!
-    pageSize: Int!
-    items: [Employee!]!
-  }
-
-  input EmployeeInput {
-    name: String!
-    age: Int!
-    class: String
-    subjects: [String!]!
-    attendance: Float!
+    class: String!
+    subjects: [String]!
+    attendance: Int!
     role: String!
-    avatar: String
-    date: String!
     email: String!
-    flagged: Boolean
-  }
-
-  input EmployeeUpdateInput {
-    name: String
-    age: Int
-    class: String
-    subjects: [String!]
-    attendance: Float
-    role: String
     avatar: String
     date: String
-    email: String
-    flagged: Boolean
-  }
-
-  type AuthUser {
-    id: ID!
-    name: String!
-    role: String!
   }
 
   type AuthPayload {
     token: String!
-    user: AuthUser!
+    user: Employee!
+  }
+
+  type EmployeePage {
+    employees: [Employee]!
+    totalCount: Int!
+    totalPages: Int!
+  }
+
+  input EmployeeFilter {
+    name: String
+    minAge: Int
+    maxAge: Int
+    role: String
+    attendanceMin: Int
+    attendanceMax: Int
+  }
+
+  input EmployeeSort {
+    field: String!
+    order: String! # "asc" or "desc"
   }
 
   type Query {
-    employees(filter: EmployeeFilter, sortBy: SortBy, page: Int = 1, pageSize: Int = 10): EmployeePage!
+    employees(
+      page: Int
+      pageSize: Int
+      filter: EmployeeFilter
+      sortBy: EmployeeSort
+    ): EmployeePage!
     employee(id: ID!): Employee
+    me: Employee
   }
 
   type Mutation {
-    addEmployee(input: EmployeeInput!): Employee!
-    updateEmployee(id: ID!, input: EmployeeUpdateInput!): Employee!
-    deleteEmployee(id: ID!): Boolean!
     login(email: String!, password: String!): AuthPayload!
+    addEmployee(
+      name: String!
+      age: Int!
+      class: String!
+      subjects: [String]!
+      attendance: Int!
+      role: String
+      email: String!
+      password: String!
+      avatar: String
+    ): Employee!
+    updateEmployee(
+      id: ID!
+      name: String
+      age: Int
+      class: String
+      subjects: [String]
+      attendance: Int
+      role: String
+      email: String
+      avatar: String
+    ): Employee!
+    deleteEmployee(id: ID!): Boolean!
   }
 `;
+
+module.exports = typeDefs;
